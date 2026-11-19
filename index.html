@@ -269,15 +269,55 @@ async function readInvNo(w,pdf,data,baseW){
   const cc=document.createElement('canvas'); cc.width=width+40; cc.height=height+40; const x=cc.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,cc.width,cc.height);
   x.filter='grayscale(1) contrast(1.6)'; x.drawImage(c,left,top,width,height,20,20,width,height);
   let out=''; try{ const r=await w.recognize(cc); out=(r.data.text||'').trim(); }
-  finally{ await w.setParameters({tessedit_pageseg_mode:'3'}); }
+  finally{ await w.setParameters({tessedit_pageseg_mode:'6'}); }
   // the line under it holds the invoice date
   let dt=''; try{
     const lh=Math.min((b.y1-b.y0)*k, 30), t2=Math.round(b.y0*k+lh*0.9), h2=Math.round(lh*2.4);
     const cd=document.createElement('canvas'); cd.width=width+40; cd.height=h2+40; const y=cd.getContext('2d'); y.fillStyle='#fff'; y.fillRect(0,0,cd.width,cd.height);
     y.filter='grayscale(1) contrast(1.6)'; y.drawImage(c,left,t2,width,h2,20,20,width,h2);
     await w.setParameters({tessedit_pageseg_mode:'6'}); const r2=await w.recognize(cd); dt=(r2.data.text||'').trim();
-  } finally{ await w.setParameters({tessedit_pageseg_mode:'3'}); }
+  } finally{ await w.setParameters({tessedit_pageseg_mode:'6'}); }
   return 'INVNO:'+out+'\nINVDATE:'+dt;
+}
+async function cleanOCR(w,c,x0,y0,x1,y1){
+  x0=Math.max(0,Math.round(x0)); y0=Math.max(0,Math.round(y0)); x1=Math.min(c.width,Math.round(x1)); y1=Math.min(c.height,Math.round(y1));
+  const W=x1-x0, H=y1-y0; if(W<20||H<20) return '';
+  const d=c.getContext('2d').getImageData(x0,y0,W,H).data;
+  const g=new Uint8ClampedArray(W*H); for(let p=0;p<W*H;p++){ g[p]=0.299*d[p*4]+0.587*d[p*4+1]+0.114*d[p*4+2]; }
+  for(let x=0;x<W;x++){ let dk=0; for(let y=0;y<H;y++) if(g[y*W+x]<120) dk++; if(dk/H>0.6) for(let y=0;y<H;y++) g[y*W+x]=255; }
+  for(let y=0;y<H;y++){ let dk=0; for(let x=0;x<W;x++) if(g[y*W+x]<120) dk++; if(dk/W>0.5) for(let x=0;x<W;x++) g[y*W+x]=255; }
+  const t=document.createElement('canvas'); t.width=W; t.height=H; const tc=t.getContext('2d'); const im=tc.createImageData(W,H);
+  for(let p=0;p<W*H;p++){ im.data[p*4]=im.data[p*4+1]=im.data[p*4+2]=g[p]; im.data[p*4+3]=255; } tc.putImageData(im,0,0);
+  const u=document.createElement('canvas'); u.width=W*2; u.height=H*2+40; const uc=u.getContext('2d'); uc.fillStyle='#fff'; uc.fillRect(0,0,u.width,u.height); uc.imageSmoothingQuality='high'; uc.drawImage(t,0,20,W*2,H*2);
+  const ui=uc.getImageData(0,0,u.width,u.height); for(let p=0;p<ui.data.length;p+=4){ const v=ui.data[p]<150?0:255; ui.data[p]=ui.data[p+1]=ui.data[p+2]=v; } uc.putImageData(ui,0,0);
+  await w.setParameters({tessedit_pageseg_mode:'6'}); const r=await w.recognize(u); return r.data.text||'';
+}
+async function readHeader(w,pdf){
+  const c=await pageCanvas(pdf,1,2480,true);
+  const txt=await cleanOCR(w,c,c.width*0.40,c.height*0.15,c.width*0.97,c.height*0.27);
+  return 'HEADER_BLOCK:\n'+txt+'\nEND_HEADER';
+}
+async function readCharges(w,pdf,data,baseW,baseH){
+  // read the charges table again, sharper, with the table lines removed
+  const words=data.words||[];
+  const desc=words.find(x=>/DESCRIPTION/i.test(x.text)&&x.bbox.y0>baseH*0.3);
+  let amt=null; for(let j=0;j<words.length;j++){ if(/^Amount$/i.test(words[j].text)&&words[j+1]&&/^In/i.test(words[j+1].text)&&words[j].bbox.y0>baseH*0.3){ amt=words[j]; break; } }
+  if(!desc&&!amt) return '';
+  const c=await pageCanvas(pdf,1,2480,true); const k=c.width/baseW;
+  let y0=desc? desc.bbox.y0*k-14 : (amt.bbox.y0-baseH*0.07)*k;
+  let y1=amt? amt.bbox.y0*k-4 : y0+baseH*0.12*k;
+  y0=Math.max(0,Math.round(y0)); y1=Math.min(c.height,Math.round(y1)); if(y1-y0<20) return '';
+  const x0=Math.round(c.width*0.04), x1=Math.round(c.width*0.97), W=x1-x0, H=y1-y0;
+  const src=c.getContext('2d').getImageData(x0,y0,W,H), d=src.data;
+  const g=new Uint8ClampedArray(W*H); for(let p=0;p<W*H;p++){ g[p]=0.299*d[p*4]+0.587*d[p*4+1]+0.114*d[p*4+2]; }
+  for(let x=0;x<W;x++){ let dk=0; for(let y=0;y<H;y++) if(g[y*W+x]<120) dk++; if(dk/H>0.6) for(let y=0;y<H;y++) g[y*W+x]=255; }
+  for(let y=0;y<H;y++){ let dk=0; for(let x=0;x<W;x++) if(g[y*W+x]<120) dk++; if(dk/W>0.5) for(let x=0;x<W;x++) g[y*W+x]=255; }
+  const t=document.createElement('canvas'); t.width=W; t.height=H; const tc=t.getContext('2d'); const im=tc.createImageData(W,H);
+  for(let p=0;p<W*H;p++){ im.data[p*4]=im.data[p*4+1]=im.data[p*4+2]=g[p]; im.data[p*4+3]=255; } tc.putImageData(im,0,0);
+  const u=document.createElement('canvas'); u.width=W*2; u.height=H*2+40; const uc=u.getContext('2d'); uc.fillStyle='#fff'; uc.fillRect(0,0,u.width,u.height); uc.imageSmoothingQuality='high'; uc.drawImage(t,0,20,W*2,H*2);
+  const ui=uc.getImageData(0,0,u.width,u.height); for(let p=0;p<ui.data.length;p+=4){ const v=ui.data[p]<150?0:255; ui.data[p]=ui.data[p+1]=ui.data[p+2]=v; } uc.putImageData(ui,0,0);
+  let out=''; try{ await w.setParameters({tessedit_pageseg_mode:'6'}); const r=await w.recognize(u); out=r.data.text||''; } finally{ await w.setParameters({tessedit_pageseg_mode:'6'}); }
+  return 'CHARGES_BLOCK:\n'+out+'\nEND_CHARGES';
 }
 async function autoCheck(pdf,my){
   const n=pdf.numPages;
@@ -294,7 +334,7 @@ async function autoCheck(pdf,my){
         const c=await pageCanvas(pdf,i,1700,true);
         if(my!==scanId) return;
         const r=await w.recognize(c); txt=r.data.text||'';
-        if(i===1){ try{ txt+='\n'+await readInvNo(w,pdf,r.data,c.width); }catch(e){} }
+        if(i===1){ try{ txt+='\n'+await readInvNo(w,pdf,r.data,c.width); }catch(e){} try{ txt+='\n'+await readCharges(w,pdf,r.data,c.width,c.height); }catch(e){} try{ txt+='\n'+await readHeader(w,pdf); }catch(e){} }
       }
       if(my!==scanId) return;
       S.text[i-1]=txt;
@@ -391,7 +431,7 @@ const MONTHS={jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',jul:'07',aug
 /* --- invoice Excel --- */
 wire('Xls',async fs=>{
   const f=fs.find(x=>/\.xlsx?$/i.test(x.name)); if(!f) return say('Choose the invoice Excel (.xlsx).','err');
-  if(!window.XLSX) return say('The Excel reader could not load.','err');
+  if(!window.XLSX) return say('The Excel reader needs internet.','err');
   try{
     const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
     S.xls=f; S.xdata=parseXls(wb);
@@ -433,9 +473,11 @@ function parseOsh(t){
   t=String(t||'').replace(/[©§¢]/g,' ').replace(/[ \t]+/g,' ');
   const o={charges:[]}; let m;
   const g=(re)=>{ const x=t.match(re); return x?x[1].trim():''; };
-  const sharp=(t.match(/INVNO:.*?(20\d{2})-?(\d{5})/)||null); o.billRef=sharp?('INV-'+sharp[1]+'-'+sharp[2]):(t.match(/INV-\d{4}-\d{4,6}/)||[''])[0]; if(!o.billRef){ const lm=t.match(/[Nn][Vv][\s\-_.Z]*(20\d{2})[\s\-_.]*(\d{5})/); if(lm) { o.billRef='INV-'+lm[1]+'-'+lm[2]; o.billRefUnsure=true; } }
-  if(m=t.match(/(?:Invoice\s*Date|INVDATE:)[^A-Za-z]*([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})[.,]?\s+(\d{4})/i)){ const mo=MONTHS[m[1].toLowerCase()]; o.date=m[2].padStart(2,'0')+'/'+(mo||'??')+'/'+m[3]; }
-  o.scm=(t.match(/SCMLOG\d+/i)||[''])[0].toUpperCase();
+  const hb=(t.match(/HEADER_BLOCK:\n([\s\S]*?)\nEND_HEADER/)||[,''])[1]; const hn=hb.match(/[Nn][Vv]\W{0,2}(20\d{2})\W{0,2}(\d{5})/); const sharp=hn||(t.match(/INVNO:.*?(20\d{2})-?(\d{5})/)||null); o.billRef=sharp?('INV-'+sharp[1]+'-'+sharp[2]):(t.match(/INV-\d{4}-\d{4,6}/)||[''])[0]; if(!o.billRef){ const lm=t.match(/[Nn][Vv][\s\-_.Z]*(20\d{2})[\s\-_.]*(\d{5})/); if(lm) { o.billRef='INV-'+lm[1]+'-'+lm[2]; o.billRefUnsure=true; } }
+  const hd=/INVDATE:[^\n]*\d{4}/.test(t)?null:hb.match(/Date\W*([A-Za-z]{3})[a-z]*\.?\s*([0-9Iil]{1,2})[.,]?\s*(\d{4})/); if(hd){ const mo=MONTHS[hd[1].toLowerCase()]; o.date=hd[2].replace(/[Iil]/g,'1').padStart(2,'0')+'/'+(mo||'??')+'/'+hd[3]; }
+  else if(m=t.match(/(?:Invoice\s*Date|INVDATE:)[^A-Za-z]*([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})[.,]?\s+(\d{4})/i)){ const mo=MONTHS[m[1].toLowerCase()]; o.date=m[2].padStart(2,'0')+'/'+(mo||'??')+'/'+m[3]; }
+  if(o.date){ const yy=+o.date.slice(-4), cy=new Date().getFullYear(); if(yy>cy||yy<cy-1) o.date=o.date.slice(0,6)+cy; }
+  o.scm=((t.replace(/HEADER_BLOCK:[\s\S]*?END_HEADER/,'').match(/SCMLOG\d{6}/i)||hb.match(/SCMLOG\d{5,}/i)||[''])[0]).toUpperCase();
   o.sol=((t.match(/S[O0]L-?\s?\d{2}-\d{3,6}/i)||[''])[0]).replace(/\s/g,'').toUpperCase().replace(/^S0L/,'SOL');
   o.type=g(/Shipment\s*Type[^\n]*?\b(F[TI1]L|L[TI1]L|FCL|LCL)\b/i).toUpperCase().replace(/^F[I1]L$/,'FTL').replace(/^L[I1]L$/,'LTL');
   o.mot=g(/\bM[Oo]T\W*([A-Za-z]+)/);
@@ -450,25 +492,48 @@ function parseOsh(t){
   o.volume=g(/Volume[^\n\d]*(?:\d\s+)?(\d+)\s*PACKAGE/i)||o.pieces; if(!o.pieces) o.pieces=o.volume; o.pvDiff = o.pieces&&o.volume&&o.pieces!==o.volume;
   if(m=t.match(/Total:?\s*QAR\s*([\d,]+\.\d{2})/gi)) o.total=num(m[m.length-1].replace(/[^\d.,]/g,''));
   // charges block
-  const blk=(t.split(/DESCRIPTION\s+OF\s+CHARGES[^\n]*\n/i)[1]||'').split(/Amount\s*In\s*Words|Sub\s*Total/i)[0]||'';
-  const lines=blk.split('\n').map(s=>s.trim()).filter(Boolean);
-  lines.forEach(l=>{
-    const mm=l.match(/^([A-Z][A-Z &.\/\-]*[A-Z])\s+(\d.*?)([\d,]+[.,]\d{2})\s*\)?$/);
-    if(mm){
-      const name=mm[1].replace(/[^A-Z &\/\-]/g,'').trim();
-      const nums=(mm[2].match(/[\d,]+(?:\.\d+)?/g)||[]);
-      const qty=nums.length&&/^\d{1,2}$/.test(nums[0])?parseInt(nums[0],10):1;
-      const usd=/USD/.test(l); const rate=nums.find(x=>/\.\d{2}$/.test(x)); const ex=(l.match(/\b3\.6\d\b/)||[''])[0];
-      let amount=num(mm[3]); const r_=rate?num(rate):0, ex_=ex?num(ex):0;
-      const calc = r_ ? +(r_*qty*(usd||ex_?(ex_||3.65):1)).toFixed(2) : 0;
-      if(calc && Math.abs(calc-amount)>0.5 && nums.length>=2) amount=calc;
-      o.charges.push({name,qty,amount,usd:usd||!!ex_,rate:r_,ex:ex_,sub:''});
-    } else if(/^[A-Z][A-Z0-9 &.\/\-()]{6,}$/.test(l) && !/\d+\.\d{2}/.test(l) && o.charges.length){ o.charges[o.charges.length-1].sub=l; }
-  });
+  if(!o.total){ const aw=t.match(/Amount\s*In\s*Words[^\n]*?QAR\s*([\d,]+\.\d{2})/i)||t.match(/\n\s*QAR\s*([\d,]+\.\d{2})\s*\n/); if(aw) o.total=num(aw[1]); }
+  const cb=t.match(/CHARGES_BLOCK:\n([\s\S]*?)\nEND_CHARGES/);
+  const candA=cb?parseCharges(cb[1]):[];
+  const blk=(t.replace(/CHARGES_BLOCK:[\s\S]*?END_CHARGES/,'').split(/DESCRIPTION\s+OF\s+CHARGES[^\n]*\n/i)[1]||'').split(/Amount\s*In\s*Words|Sub\s*Total/i)[0]||'';
+  const candB=parseCharges(blk);
+  const fix=(list)=>{ list=list.map(c=>Object.assign({},c)); let ok=false;
+    list.forEach(c=>{ const fx=c.usd?(c.ex||3.65):1; if(c.rate){ const q=c.amount/(c.rate*fx); if(Math.abs(q-Math.round(q))<0.01&&Math.round(q)>=1&&Math.round(q)<=50) c.qty=Math.round(q); c.calc=+(c.rate*c.qty*fx).toFixed(2); } });
+    if(o.total&&list.length){
+      if(list.length===1){ list[0].amount=o.total; ok=true; }
+      else { let sum=list.reduce((a,b)=>a+b.amount,0);
+        if(Math.abs(sum-o.total)>0.5) list.forEach(c=>{ if(c.calc&&Math.abs(c.calc-c.amount)>0.5&&Math.abs(sum-c.amount+c.calc-o.total)<=0.5){ sum=sum-c.amount+c.calc; c.amount=c.calc; } });
+        if(Math.abs(sum-o.total)>0.5){ const sc=list.reduce((a,b)=>a+(b.calc||b.amount),0); if(Math.abs(sc-o.total)<=0.5){ list.forEach(c=>{ if(c.calc) c.amount=c.calc; }); sum=sc; } }
+        ok=Math.abs(sum-o.total)<=0.5; }
+    }
+    list.forEach(c=>{ const f=c.qty*(c.usd?(c.ex||3.65):1); if(f){ if(!c.rate||Math.abs(c.rate*f-c.amount)>0.5) c.rate=+(c.amount/f).toFixed(2); } });
+    return {list,ok}; };
+  const A=fix(candA), B=fix(candB);
+  o.charges = A.ok?A.list : B.ok?B.list : (A.list.length?A.list:B.list);
+  if(A.ok||B.ok){ const other=A.ok?B.list:A.list; o.charges.forEach((c,i)=>{ if(!c.sub){ const m=other.find(x=>x.name===c.name&&x.sub); if(m) c.sub=m.sub; } }); }
   if(!o.total) o.total=o.charges.reduce((a,b)=>a+b.amount,0);
   return o;
 }
 const COUNTRIES=[[/saudi/i,'Saudi Arabia'],[/turk/i,'Turkey'],[/emirates|\buae\b/i,'United Arab Emirates'],[/oman/i,'Oman'],[/kuwait/i,'Kuwait'],[/qatar/i,'Qatar'],[/bahrain/i,'Bahrain'],[/jordan/i,'Jordan'],[/egypt/i,'Egypt'],[/india/i,'India'],[/china/i,'China']];
+function parseCharges(text){
+  const out=[];
+  String(text).split('\n').forEach(raw=>{
+    let l=raw.replace(/[|{}\[\]();:©¢§!_~]/g,' ').replace(/\s+/g,' ').trim().replace(/^[^A-Za-z]+/,'');
+    l=l.replace(/\b[AO0-9][0-9OSAl]*[.,]\d{2,3}\b/g,t=>t.replace(/^A/,'4').replace(/O/g,'0').replace(/S/g,'5').replace(/l/g,'1'));
+    l=l.replace(/(\d[\d,]*\.\d{2})\d\b/g,'$1'); if(!l) return;
+    if(/DESCRIPTION|\bQTY\b|AMOUNT\s*$/i.test(l)&&!/\d+\.\d{2}/.test(l)) return;
+    const m=l.match(/^([A-Z][A-Z &.\/\-]*[A-Z])\s*(.*)$/); if(!m) return;
+    const rest=m[2]; const toks=rest.match(/\d[\d,]*(?:\.\d+)?/g)||[]; const dec=toks.filter(x=>/\.\d{2}$/.test(x));
+    if(!dec.length){ if(out.length&&/^[A-Z][A-Z0-9 &.\/\-()]{6,}$/.test(l)) out[out.length-1].sub=l; return; }
+    const exT=toks.find(x=>/^3\.6\d$/.test(x)); const ex=exT?num(exT):0;
+    let amount=num(dec[dec.length-1]); const rc=dec.slice(0,-1).filter(x=>!/^3\.6\d$/.test(x)); const rateT=rc.length?rc[0]:null; let rate=rateT?num(rateT):0;
+    const ri=rateT?toks.indexOf(rateT):toks.length-1; const qT=toks.slice(0,ri).find(x=>/^\d{1,3}$/.test(x)); const qty=qT?parseInt(qT,10):1;
+    const usd=/USD|U5D|USB/i.test(rest)||!!ex;
+    const calc=rate?+(rate*qty*(usd?(ex||3.65):1)).toFixed(2):0;
+    out.push({name:m[1].replace(/[^A-Z &\/\-]/g,'').trim(),qty,amount,calc,usd,rate,ex,sub:''});
+  });
+  return out;
+}
 const cityCountry=s=>{ const p=String(s||'').replace(/\s+[A-Z]{2,4}\s*#.*$/,'').split(',').map(x=>x.trim()).filter(Boolean); if(!p.length) return '';
   let c=p.length>=2?p[p.length-1]:''; const hit=COUNTRIES.find(([re])=>re.test(c)); c=hit?hit[1]:title(c);
   const city=title(p.length>=2?p[p.length-2]:p[0]); return c?city+', '+c:city; };
