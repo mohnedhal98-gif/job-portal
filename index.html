@@ -61,6 +61,8 @@ input[type=text]{font:inherit;font-size:16px;padding:9px 11px;border:1px solid v
 .pg.out{border-color:var(--bad);background:var(--bad-bg)}
 .pg.out canvas{opacity:.35}
 .pg.out .st,.pg.out .why{color:var(--bad)}
+.pg.cov{border-color:#c98a00}
+.pg.cov .st,.pg.cov .why{color:#9a6a00}
 .pg.out::after{content:"";position:absolute;left:14px;right:14px;top:38%;border-top:3px solid var(--bad);transform:rotate(-24deg)}
 .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--muted)}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
@@ -176,7 +178,7 @@ td.inv{font-weight:700;white-space:nowrap}
 <script src="lib/xlsx.full.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-const S={inv:null,pack:null,packPages:0,removed:new Set(),pod:[],xls:null,xdata:null,text:[],scanDone:false};
+const S={inv:null,pack:null,packPages:0,removed:new Set(),cover:{},why:{},pod:[],xls:null,xdata:null,text:[],scanDone:false};
 let PG=[], scanId=0, OCR=null;
 if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc=new URL("lib/pdf.worker.min.js",location.href).href;
 const isPdf=f=>f.type==='application/pdf'||/\.pdf$/i.test(f.name);
@@ -211,7 +213,7 @@ wire('Pack',fs=>{ const f=fs.find(isPdf); if(!f) return say('Choose a PDF for th
 
 async function loadPack(f){
   const my=++scanId;
-  S.pack=f; S.packPages=0; S.removed=new Set([0]); S.text=[]; S.scanDone=false; S.scanError=''; PG=[]; $('pages').innerHTML=''; scanMsg('Reading pages…',true); draw();
+  S.pack=f; S.packPages=0; S.removed=new Set([0]); S.cover={}; S.why={0:'Oshaiger invoice'}; S.text=[]; S.scanDone=false; S.scanError=''; PG=[]; $('pages').innerHTML=''; scanMsg('Reading pages…',true); draw();
   try{
     const pdf=await pdfjsLib.getDocument({data:new Uint8Array(await f.arrayBuffer())}).promise;
     if(my!==scanId) return;
@@ -229,15 +231,45 @@ function drawPages(pdf){
     const st=document.createElement('span'); st.className='st';
     const why=document.createElement('div'); why.className='why'; why.textContent=i===0?'Oshaiger invoice':'';
     lab.append(n,st); el.append(c,lab,why); box.append(el);
-    const paint=()=>{ const out=S.removed.has(i); el.classList.toggle('out',out); st.textContent=out?'Out':'Keep'; el.setAttribute('aria-pressed',String(out)); el.setAttribute('aria-label','Page '+(i+1)+(out?' taken out':' kept')); };
+    const paint=()=>{ const out=S.removed.has(i), cv=!out&&coverOf(i); el.classList.toggle('out',out); el.classList.toggle('cov',!!cv); st.textContent=out?'Out':(cv?'Keep · covered':'Keep'); why.textContent=pageNote(i); el.setAttribute('aria-pressed',String(out)); el.setAttribute('aria-label','Page '+(i+1)+(out?' taken out':' kept')+'. '+why.textContent); };
     const toggle=()=>{ S.removed.has(i)?S.removed.delete(i):S.removed.add(i); paint(); draw(); };
     el.onclick=toggle; el.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();} });
-    PG[i]={paint,why}; paint();
-    pdf.getPage(i+1).then(p=>{ const v=p.getViewport({scale:1}); const vp=p.getViewport({scale:220/v.width}); c.width=vp.width; c.height=vp.height; return p.render({canvasContext:c.getContext('2d'),viewport:vp}).promise; }).catch(()=>{});
+    PG[i]={paint,why,c,ready:null}; paint();
+    PG[i].ready=pdf.getPage(i+1).then(p=>{ const v=p.getViewport({scale:1}); const vp=p.getViewport({scale:220/v.width}); c.width=vp.width; c.height=vp.height; return p.render({canvasContext:c.getContext('2d'),viewport:vp}).promise; }).catch(()=>{});
   }
 }
 function scanMsg(t,busy){ if(S.pack&&!S.scanDone&&$('j1state')&&!$('vJ1').hidden){ $('j1state').hidden=false; $('j1state').textContent='Waiting for the page check: '+(t||''); } const s=$('scan'); s.hidden=!t; s.innerHTML=''; if(!t) return; if(busy){const d=document.createElement('span');d.className='dot';s.append(d);} const x=document.createElement('span'); x.textContent=t; s.append(x); }
-function mark(i,remove,why){ if(!PG[i]) return; remove?S.removed.add(i):S.removed.delete(i); PG[i].why.textContent=why||''; PG[i].paint(); }
+function mark(i,remove,why){ if(!PG[i]) return; remove?S.removed.add(i):S.removed.delete(i); if(why) S.why[i]=why; else delete S.why[i]; PG[i].paint(); }
+const coverOf=i=>{ const c=S.cover&&S.cover[i]; return c&&c.boxes.length?c:null; };
+function pageNote(i){
+  const c=coverOf(i);
+  if(S.removed.has(i)) return S.why[i]||'Taken out by hand';
+  if(c) return 'Covered in white: '+c.words.join(', ');
+  return '';
+}
+function drawCover(i){ const g=PG[i]; const cv=coverOf(i); if(!g||!cv) return; g.ready.then(()=>{ const x=g.c.getContext('2d'), W=g.c.width, H=g.c.height; cv.boxes.forEach(b=>{ x.fillStyle='#fff'; x.fillRect(b.x*W,b.y*H,b.w*W,b.h*H); x.strokeStyle='#c98a00'; x.lineWidth=1.5; x.strokeRect(b.x*W,b.y*H,b.w*W,b.h*H); }); }); }
+/* words to cover in white on pages that are kept */
+const WCOV=/osha[il1]g|oshig|standardosh|ramesh|venugopal|anjali|^SOL-?\d{2}-\d{3,}|^\+?(974)?\s?4000\s?0026$|^40394072$/i;
+const PAD_X=0.004, PAD_Y=0.003;
+function boxesFromWords(words,W,H){
+  const out=[], hit=[];
+  words.forEach((w,k)=>{ const t=(w.text||'').trim(); if(!t||!WCOV.test(t)) return;
+    let x0=w.bbox.x0,y0=w.bbox.y0,x1=w.bbox.x1,y1=w.bbox.y1;
+    const pv=words[k-1]; if(pv&&/^standard$/i.test((pv.text||'').trim())&&Math.abs(pv.bbox.y0-y0)<(y1-y0)){ x0=Math.min(x0,pv.bbox.x0); hit.push(pv.text.trim()+' '+t); } else hit.push(t);
+    const nx=words[k+1]; if(nx&&/^logistics?$/i.test((nx.text||'').trim())&&Math.abs(nx.bbox.y0-y0)<(y1-y0)) x1=Math.max(x1,nx.bbox.x1);
+    out.push({x:x0/W-PAD_X,y:y0/H-PAD_Y,w:(x1-x0)/W+2*PAD_X,h:(y1-y0)/H+2*PAD_Y}); });
+  return {boxes:out,words:[...new Set(hit)]};
+}
+function wordsFromText(tc,vp){
+  // split each text item into words with an estimated position
+  const ws=[];
+  tc.items.forEach(it=>{ if(!it.str||!it.str.trim()) return;
+    const t=pdfjsLib.Util.transform(vp.transform,it.transform); const fh=Math.hypot(t[2],t[3]); const x=t[4], yb=t[5], wd=(it.width||0)*vp.scale;
+    const L=it.str.length||1; const re=/\S+/g; let m;
+    while((m=re.exec(it.str))){ const a=x+wd*m.index/L, b=x+wd*(m.index+m[0].length)/L; ws.push({text:m[0],bbox:{x0:a,y0:yb-fh,x1:b,y1:yb+fh*0.25}}); } });
+  return ws;
+}
+const MSG=/\bFrom:|\bSent:|\bSubject:|Outlook|Best\s*Regards|Kind\s*Regards|Dear\s+(Sir|Madam)|best\s+rate|quotation/i;
 
 /* Oshaiger check: read the words on every page (OCR for scanned pages), look for Oshaiger words */
 const OSH=/osha[il1]ger|oshiger|standard\s*osha|standardosha|ramesh|venugopal|anjali|SOL-?\s?\d{2}-\d{3,}/i;
@@ -324,8 +356,8 @@ async function autoCheck(pdf,my){
   try{
     for(let i=1;i<=n;i++){
       scanMsg('Checking page '+i+' of '+n+' for Oshaiger…',true);
-      let txt='';
-      try{ const tc=await (await pdf.getPage(i)).getTextContent(); txt=tc.items.map(t=>t.str).join(' '); }catch(e){}
+      let txt='', words=[], WW=1, HH=1;
+      try{ const pg=await pdf.getPage(i); const vp=pg.getViewport({scale:1}); const tc=await pg.getTextContent(); txt=tc.items.map(t=>t.str).join(' '); words=wordsFromText(tc,vp); WW=vp.width; HH=vp.height; }catch(e){}
       if(txt.replace(/\s/g,'').length<=40){
         if(!window.Tesseract) throw new Error('The page reader did not load (no internet, or the network blocks cdn.jsdelivr.net).');
         if(i===1||!OCR) scanMsg('Loading the page reader (first time can take a minute)…',true);
@@ -333,14 +365,22 @@ async function autoCheck(pdf,my){
         scanMsg('Reading page '+i+' of '+n+'…',true);
         const c=await pageCanvas(pdf,i,1700,true);
         if(my!==scanId) return;
-        const r=await w.recognize(c); txt=r.data.text||'';
+        const r=await w.recognize(c); txt=r.data.text||''; words=r.data.words||[]; WW=c.width; HH=c.height;
         if(i===1){ try{ txt+='\n'+await readInvNo(w,pdf,r.data,c.width); }catch(e){} try{ txt+='\n'+await readCharges(w,pdf,r.data,c.width,c.height); }catch(e){} try{ txt+='\n'+await readHeader(w,pdf); }catch(e){} }
       }
       if(my!==scanId) return;
       S.text[i-1]=txt;
       const m=txt.match(OSH);
-      if(i===1) mark(0,true,m?'Oshaiger invoice':'Page 1 (Oshaiger invoice)');
-      else mark(i-1,!!m,m?'Shows "'+m[0].trim()+'"':'');
+      if(i===1) mark(0,true,'Oshaiger invoice');
+      else if(m){
+        const cv=boxesFromWords(words,WW,HH); S.cover[i-1]=cv;
+        const isMsg=MSG.test(txt), many=cv.boxes.length>6;
+        if(isMsg) mark(i-1,true,'Oshaiger email or rate quote');
+        else if(many) mark(i-1,true,'Oshaiger shown '+cv.boxes.length+' times');
+        else if(!cv.boxes.length) mark(i-1,true,'Shows "'+m[0].trim()+'" (could not cover it)');
+        else mark(i-1,false,'');
+        drawCover(i-1);
+      } else mark(i-1,false,'');
       draw();
     }
     scanMsg('Check done. Look over the red pages before you download. The J1 entry sheet is ready.');
@@ -364,7 +404,9 @@ function draw(){
   const ld=$('lPod'); ld.innerHTML=''; S.pod.forEach((f,i)=>ld.append(itemRow(f.name,'',()=>{S.pod.splice(i,1);draw();})));
   const k=kept(), nm=names(), lines=[];
   if(S.inv) lines.push('1. Invoice: '+S.inv.name);
-  if(S.pack) lines.push((lines.length+1)+'. Package: '+k.length+' of '+S.packPages+' pages kept'+(S.removed.size?' (out: page '+[...S.removed].sort((a,b)=>a-b).map(x=>x+1).join(', ')+')':''));
+  if(S.pack){ lines.push((lines.length+1)+'. Package: '+k.length+' of '+S.packPages+' pages kept');
+    [...S.removed].sort((a,b)=>a-b).forEach(x=>lines.push('     Page '+(x+1)+' taken out: '+pageNote(x)));
+    k.filter(coverOf).forEach(x=>lines.push('     Page '+(x+1)+' kept, '+pageNote(x).charAt(0).toLowerCase()+pageNote(x).slice(1))); }
   S.pod.forEach(f=>lines.push((lines.length+1)+'. POD: '+f.name));
   if(lines.length && !nm) lines.push('','Type the invoice number to name the file.');
   $('order').textContent = lines.length ? lines.join('\n') : 'Add the files above.';
@@ -375,6 +417,23 @@ $('fInv').addEventListener('input',()=>{draw(); if(!$('vJ1').hidden) renderJ1();
 
 async function addPdf(out,f,pages){ const src=await PDFLib.PDFDocument.load(await f.arrayBuffer(),{ignoreEncryption:true}); (await out.copyPages(src,pages||src.getPageIndices())).forEach(p=>out.addPage(p)); }
 async function addImg(out,f){ const b=await f.arrayBuffer(); const img=/png/i.test(f.type||f.name)?await out.embedPng(b):await out.embedJpg(b); const W=595.28,H=841.89,m=24,s=Math.min((W-2*m)/img.width,(H-2*m)/img.height); const w=img.width*s,h=img.height*s; out.addPage([W,H]).drawImage(img,{x:(W-w)/2,y:(H-h)/2,width:w,height:h}); }
+async function addPack(out){
+  const buf=await S.pack.arrayBuffer();
+  const src=await PDFLib.PDFDocument.load(buf.slice(0),{ignoreEncryption:true});
+  let pdf=null;
+  for(const i of kept()){
+    const cv=coverOf(i);
+    if(!cv){ const [pg]=await out.copyPages(src,[i]); out.addPage(pg); continue; }
+    if(!pdf) pdf=await pdfjsLib.getDocument({data:new Uint8Array(buf.slice(0))}).promise;
+    const p=await pdf.getPage(i+1); const v=p.getViewport({scale:1}); const vp=p.getViewport({scale:Math.min(3,1700/v.width)});
+    const c=document.createElement('canvas'); c.width=Math.round(vp.width); c.height=Math.round(vp.height);
+    const x=c.getContext('2d'); x.fillStyle='#fff'; x.fillRect(0,0,c.width,c.height);
+    await p.render({canvasContext:x,viewport:vp}).promise;
+    x.fillStyle='#fff'; cv.boxes.forEach(b=>x.fillRect(b.x*c.width,b.y*c.height,b.w*c.width,b.h*c.height));
+    const jpg=await (await fetch(c.toDataURL('image/jpeg',0.9))).arrayBuffer();
+    const img=await out.embedJpg(jpg); out.addPage([v.width,v.height]).drawImage(img,{x:0,y:0,width:v.width,height:v.height});
+  }
+}
 function saveBlob(blob,name){ const u=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=u; a.download=name; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),4000); }
 
 async function merge(withInv){
@@ -383,7 +442,7 @@ async function merge(withInv){
   try{
     const out=await PDFLib.PDFDocument.create();
     if(withInv&&S.inv) await addPdf(out,S.inv);
-    if(S.pack&&kept().length) await addPdf(out,S.pack,kept());
+    if(S.pack&&kept().length) await addPack(out);
     for(const f of S.pod) isPdf(f)? await addPdf(out,f) : await addImg(out,f);
     const blob=new Blob([await out.save()],{type:'application/pdf'}), pages=out.getPageCount();
     saveBlob(blob,fn);
@@ -392,7 +451,7 @@ async function merge(withInv){
   }catch(e){ say('Could not merge: '+((e&&e.message)||e),'err'); }
 }
 $('bFull').onclick=()=>merge(true); $('bSup').onclick=()=>merge(false);
-$('bClear').onclick=()=>{ S.xls=null;S.xdata=null;S.text=[];S.scanDone=false; S.inv=null;S.pack=null;S.packPages=0;S.pod=[];PG=[];scanId++;$('fInv').value='';$('pages').innerHTML='';$('legend').hidden=true;scanMsg('');say('');draw(); };
+$('bClear').onclick=()=>{ S.xls=null;S.xdata=null;S.text=[];S.scanDone=false; S.inv=null;S.pack=null;S.packPages=0;S.pod=[];PG=[];S.cover={};S.why={};scanId++;$('fInv').value='';$('pages').innerHTML='';$('legend').hidden=true;scanMsg('');say('');draw(); };
 
 /* saved files: kept in this browser (IndexedDB) */
 function idb(){ return new Promise((res,rej)=>{ const r=indexedDB.open('gx-job-portal',1); r.onupgradeneeded=()=>r.result.createObjectStore('files',{keyPath:'key'}); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
@@ -637,7 +696,7 @@ function renderJ1(){
     ['BL / Airwaybill',J.bl?J.bl+'  (check: from '+J.blFrom+')':'Not found. Use the supplier invoice no. or CMR from the documents'],['Invoice PDF','Invoice '+parseInt(J.no||'0',10)+' printed from Odoo'],
     ['Supporting Documents','INV-2026-'+J.no+'_Supporting_documents.pdf'],['Remarks',J.scm]]);
   add('7. Supporting Documents',['Field','Enter'],[
-    ['Package pages kept',J.keptPages.length?J.keptPages.join(', ')+' ('+J.keptPages.length+' pages)':'none'],['Pages taken out',[...S.removed].sort((a,b)=>a-b).map(i=>i+1).join(', ')||'none'],['POD',S.pod.length?S.pod.map(f=>f.name).join(', '):'not added yet']]);
+    ['Package pages kept',J.keptPages.length?J.keptPages.join(', ')+' ('+J.keptPages.length+' pages)':'none'],['Pages taken out',[...S.removed].sort((a,b)=>a-b).map(i=>(i+1)+' ('+pageNote(i)+')').join('; ')||'none'],['Pages kept with text covered',kept().filter(coverOf).map(i=>(i+1)+' ('+coverOf(i).words.join(', ')+')').join('; ')||'none'],['POD',S.pod.length?S.pod.map(f=>f.name).join(', '):'not added yet']]);
   add('8. Profit',['Sale','Cost','Profit'],[[money(J.sale),money(J.cost),money(J.sale-J.cost)]]);
   J1TEXT='# Style J1: Job '+parseInt(J.no||'0',10)+' ('+J.scm+')\n\n'+T.join('\n\n');
 }
